@@ -15,7 +15,7 @@
   button { padding:8px 12px; border-radius:6px; border: none; background:#0b74de; color:white; cursor:pointer; }
   button.secondary { background:#6c757d; }
   .beaker { width:100%; height:200px; border: 2px solid #9fb3d9; border-radius:10px; position:relative; background:linear-gradient(#e8f2ff,#ffffff); overflow:hidden; }
-  .liquid { position:absolute; left:8px; right:8px; bottom:8px; border-radius:6px; background:linear-gradient(#bfe1ff,#dff5ff); box-shadow: inset 0 6px 12px rgba(0,0,0,0.04); transition: height 0.35s; display:flex; align-items:center; justify-content:center; font-weight:600; color:#044a6b }
+  .liquid { position:absolute; left:8px; right:8px; bottom:8px; border-radius:6px; background:linear-gradient(#bfe1ff,#dff5ff); box-shadow: inset 0 6px 12px rgba(0,0,0,0.04); transition: height 0.35s; display:flex; flex-direction:column; align-items:center; justify-content:center; font-weight:600; color:#044a6b; text-align:center; }
   .readouts { font-family:monospace; font-size:0.95rem; margin-top:10px; }
   .small { font-size:0.82rem; color:#444; margin-top:6px }
   canvas { width:100% !important; height:240px !important; }
@@ -63,14 +63,16 @@
         <div>H₂SO₄ (mol initial): <span id="molesH2SO4">0.0000</span> mol</div>
         <div>Estimated temperature rise: <span id="tempRise">0.00</span> °C</div>
         <div style="margin-top:8px">Current pH: <strong id="pHdisplay">---</strong></div>
-        <div class="small">Assumptions: solution volume is constant (no volume change on dissolving), density ≈ 1 g·mL⁻¹, heat capacity Cp = 4.18 J·g⁻¹·K⁻¹, enthalpy neutralisation ≈ 57 kJ·mol⁻¹ (per mol OH⁻ neutralised).</div>
       </div>
     </div>
 
     <div class="card">
       <strong>Beaker view</strong>
       <div class="beaker" aria-hidden="true">
-        <div id="liquid" class="liquid" style="height:60%">pH —</div>
+        <div id="liquid" class="liquid" style="height:60%">
+          pH — <br/>
+          <span id="contentsLabel" style="font-size:0.9rem; font-weight:500; color:#333"></span>
+        </div>
       </div>
 
       <div style="margin-top:12px; display:flex; gap:12px;">
@@ -96,29 +98,13 @@
   </div>
 
 <script>
-/*
-  Simulation logic:
-  - Initial moles H2SO4 = cAcid * V
-  - Each spatula adds mass (g_spatula * efficiency). NaOH mol = mass / 40.00
-  - Na+ total moles = moles NaOH added
-  - Sulfate total (S_total) moles = initial moles H2SO4 (one sulfate per H2SO4)
-  - The solver computes [H+] by electroneutrality:
-      Na+ + [H+] = [HSO4-] + 2[SO4^2-] + [OH-]
-    with Ka2 relation:
-      [SO4] = Ka2 * [HSO4] / [H+]
-    and S_total = [HSO4] + [SO4]
-  - Substitute to reduce to single equation f([H+]) = 0 and solve by bisection.
-  - In "approximate" mode both protons are treated as strong: net equivalents e = 2*n_H2SO4 - n_NaOH.
-*/
-
 const MM_NaOH = 40.00;
-const Ka2 = Math.pow(10, -1.99); // 10^-1.99
+const Ka2 = Math.pow(10, -1.99);
 const Kw = 1e-14;
-const dH_neutral_kJ_per_mol = 57; // approximate neutralisation heat per mol OH reacted (kJ)
-const Cp = 4.18; // J/g/K
-const density = 1.0; // g/mL ~ 1
+const dH_neutral_kJ_per_mol = 57;
+const Cp = 4.18;
+const density = 1.0;
 
-// HTML elements
 const cAcidEl = document.getElementById('cAcid');
 const volEl = document.getElementById('vol');
 const spatulaMassEl = document.getElementById('spatulaMass');
@@ -136,6 +122,7 @@ const molesH2SO4El = document.getElementById('molesH2SO4');
 const pHdisplay = document.getElementById('pHdisplay');
 const tempRiseEl = document.getElementById('tempRise');
 const liquidEl = document.getElementById('liquid');
+const contentsLabel = document.getElementById('contentsLabel');
 const speciesBox = document.getElementById('speciesBox');
 
 let state = {
@@ -143,10 +130,9 @@ let state = {
   massNaOH: 0.0,
   molesNaOH: 0.0,
   molesH2SO4: parseFloat(cAcidEl.value) * parseFloat(volEl.value),
-  history: [] // {spatulas, pH}
+  history: []
 };
 
-// Chart.js setup
 const ctx = document.getElementById('phChart');
 let chart = new Chart(ctx, {
   type: 'line',
@@ -195,8 +181,8 @@ function addSpatula(n=1) {
 }
 
 function updateDisplay() {
-  const V = parseFloat(volEl.value) || 0.25; // L
-  const S_total_mol = (parseFloat(cAcidEl.value) || 0.0) * V; // moles H2SO4 -> 1 sulfate per
+  const V = parseFloat(volEl.value) || 0.25;
+  const S_total_mol = (parseFloat(cAcidEl.value) || 0.0) * V;
   state.molesH2SO4 = S_total_mol;
   nSpatEl.textContent = state.spatulas;
   massNaOHEl.textContent = state.massNaOH.toFixed(3);
@@ -204,27 +190,52 @@ function updateDisplay() {
   molesH2SO4El.textContent = state.molesH2SO4.toFixed(4);
 
   const model = modelSelect.value;
-  // Compute concentrations
   let conc = computeConcentrations(state.molesH2SO4, state.molesNaOH, V, model);
-  // Update pH display and beaker
+
   let pH = conc.pH;
   pHdisplay.textContent = (isFinite(pH) ? pH.toFixed(3) : '---');
-  // Update liquid color/height to reflect pH: map pH 0..14 to color gradient (red→green→blue)
   let pct = Math.max(0, Math.min(1, (pH || 7) / 14));
-  let heightPct = 40 + 45 * pct; // visual fill
+  let heightPct = 40 + 45 * pct;
   liquidEl.style.height = heightPct + '%';
-  liquidEl.textContent = `pH ${ (isFinite(pH) ? pH.toFixed(2) : '---') }`;
-  // Temperature rise estimate (J)
-  // neutralised moles = min(molesNaOH, 2*molesH2SO4)
+  liquidEl.firstChild.textContent = `pH ${ (isFinite(pH) ? pH.toFixed(2) : '---') }`;
+
   const neutralisedMoles = Math.min(state.molesNaOH, 2 * state.molesH2SO4);
-  const energyJ = neutralisedMoles * dH_neutral_kJ_per_mol * 1000; // J
+  const energyJ = neutralisedMoles * dH_neutral_kJ_per_mol * 1000;
   const massSolution_g = V * 1000 * density;
   const deltaT = energyJ / (massSolution_g * Cp);
   tempRiseEl.textContent = deltaT.toFixed(2);
-  // species concentrations
+
   speciesBox.innerHTML = `[H⁺]: ${formatConc(conc.H)} M<br/>[OH⁻]: ${formatConc(conc.OH)} M<br/>[HSO₄⁻]: ${formatConc(conc.HSO4)} M<br/>[SO₄²⁻]: ${formatConc(conc.SO4)} M<br/>[Na⁺]: ${formatConc(conc.Na)} M`;
 
-  // update chart
+  // Determine beaker contents
+  let contents = "";
+  if (model === "approx") {
+    const eq_initial = 2 * state.molesH2SO4;
+    const diff = state.molesNaOH - eq_initial;
+    if (state.molesNaOH <= 1e-9) {
+      contents = "Sulfuric acid only";
+    } else if (diff < -1e-9) {
+      contents = "Sulfuric acid + sodium sulfate";
+    } else if (Math.abs(diff) <= 1e-9) {
+      contents = "Sodium sulfate only";
+    } else {
+      contents = "Sodium sulfate + sodium hydroxide";
+    }
+  } else {
+    const OH_total = state.molesNaOH;
+    const H_total = 2 * state.molesH2SO4;
+    if (OH_total <= 1e-9) {
+      contents = "Sulfuric acid only";
+    } else if (OH_total < H_total - 1e-9) {
+      contents = "Sulfuric acid + sodium sulfate";
+    } else if (Math.abs(OH_total - H_total) <= 1e-9) {
+      contents = "Sodium sulfate only";
+    } else {
+      contents = "Sodium sulfate + sodium hydroxide";
+    }
+  }
+  contentsLabel.textContent = contents;
+
   state.history.push({ spat: state.spatulas, pH: pH });
   chart.data.labels.push(state.spatulas);
   chart.data.datasets[0].data.push(isFinite(pH) ? pH : null);
@@ -238,29 +249,21 @@ function formatConc(x) {
   return x.toExponential(3);
 }
 
-/* Compute concentrations.
-   Inputs: molesH2SO4 (mol), molesNaOH (mol), V (L)
-   model: 'accurate' or 'approx'
-   Returns object {pH, H, OH, HSO4, SO4, Na}
-*/
 function computeConcentrations(molesH2SO4, molesNaOH, V, model) {
   if (V <= 0) V = 0.001;
-  const S_total = molesH2SO4 / V; // mol·L^-1 total sulfate species
-  const Na_conc = molesNaOH / V;  // mol·L^-1
+  const S_total = molesH2SO4 / V;
+  const Na_conc = molesNaOH / V;
 
-  // Approximate model: treat both protons as strong acids
   if (model === 'approx') {
     const equivalents_initial = 2 * molesH2SO4;
-    const eRemaining = equivalents_initial - molesNaOH; // mol of H+ equivalents left (can be negative)
+    const eRemaining = equivalents_initial - molesNaOH;
     if (eRemaining > 0) {
       const H = eRemaining / V;
       const pH = -Math.log10(H);
       return { pH, H, OH: Kw / H, HSO4: 0, SO4: S_total, Na: Na_conc };
     } else if (Math.abs(eRemaining) < 1e-12) {
-      // neutral: approx pH 7 (salt of strong acid/strong base)
       return { pH: 7.00, H: 1e-7, OH: 1e-7, HSO4: 0, SO4: S_total, Na: Na_conc };
     } else {
-      // excess OH
       const OH = (-eRemaining) / V;
       const H = Kw / OH;
       const pH = 14 - Math.log10(OH);
@@ -268,15 +271,6 @@ function computeConcentrations(molesH2SO4, molesNaOH, V, model) {
     }
   }
 
-  // Accurate model:
-  // Solve for [H+] using electroneutrality:
-  // Na+ + [H+] = [HSO4-] + 2[SO4^2-] + [OH-]
-  // with S_total = [HSO4] + [SO4]
-  // and SO4 = Ka2 * HSO4 / H+
-  // => SO4 = Ka2 * S_total / (H+ + Ka2)
-  // => HSO4 = S_total - SO4 = S_total * (H+ / (H+ + Ka2))
-  // Then electroneutrality becomes function f(H+) = Na + H - (HSO4 + 2*SO4 + Kw/H) = 0
-  // Solve for H+ by bisection in [1e-14, 1e2]
   function fH(H) {
     const SO4 = Ka2 * S_total / (H + Ka2);
     const HSO4 = S_total - SO4;
@@ -284,25 +278,19 @@ function computeConcentrations(molesH2SO4, molesNaOH, V, model) {
     return Na_conc + H - (HSO4 + 2 * SO4 + OH);
   }
 
-  // Check special easy cases to speed up:
-  // If molesNaOH is extremely small vs acids, H will be large; else if huge -> basic.
-  // Use bisection on log scale:
   let H_low = 1e-14, H_high = 1e2;
   let f_low = fH(H_low), f_high = fH(H_high);
-  // If f_low and f_high have same sign (rare), expand bounds
   let it = 0;
   while (f_low * f_high > 0 && it < 80) {
     H_low *= 10; H_high *= 10;
     f_low = fH(H_low); f_high = fH(H_high);
     it++;
   }
-  // Now normal bisection between 1e-14 and 1e2
   let H_mid = 1e-7;
   for (let i=0; i<80; i++) {
-    H_mid = Math.sqrt(H_low * H_high); // geometric midpoint
+    H_mid = Math.sqrt(H_low * H_high);
     const f_mid = fH(H_mid);
     if (Math.abs(f_mid) < 1e-14) break;
-    // determine which side to replace
     if (f_low * f_mid <= 0) {
       H_high = H_mid; f_high = f_mid;
     } else {
@@ -317,17 +305,13 @@ function computeConcentrations(molesH2SO4, molesNaOH, V, model) {
   return { pH, H, OH, HSO4, SO4, Na: Na_conc };
 }
 
-// Event listeners
 addSpat.addEventListener('click', ()=> addSpatula(1));
 add10.addEventListener('click', ()=> addSpatula(10));
 resetBtn.addEventListener('click', resetState);
 
-// Recompute on parameter changes
 [cAcidEl, volEl, spatulaMassEl, efficiencyEl, modelSelect].forEach(el => {
   el.addEventListener('change', ()=> {
-    // Recompute molesH2SO4 if relevant, do NOT reset spatulas (user may change model)
     state.molesH2SO4 = parseFloat(cAcidEl.value) * parseFloat(volEl.value);
-    // if concentration or volume changed we may want to reset chart to avoid mismatch; keep spatulas for exploration
     updateDisplay();
   });
 });
